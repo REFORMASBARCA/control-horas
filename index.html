@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Control de horas</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background:#f6f7f9; }
+    header { background:#111827; color:#fff; padding:14px 16px; }
+    header h1 { margin:0; font-size:18px; }
+    main { max-width: 720px; margin: 18px auto; padding: 0 12px 40px; }
+    .card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:14px; margin: 12px 0; }
+    label { display:block; font-size: 13px; margin:10px 0 6px; color:#374151; }
+    input, select, button, textarea { width:100%; padding:10px; border-radius:10px; border:1px solid #d1d5db; font-size:14px; box-sizing:border-box; }
+    textarea { min-height: 70px; resize: vertical; }
+    button { background:#111827; color:#fff; border:none; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+    .msg { padding:10px; border-radius:10px; background:#eef2ff; color:#1f2937; margin-top:10px; }
+    .err { background:#fee2e2; }
+    .topbar { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+    .muted { color:#6b7280; font-size: 13px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:10px; border-bottom:1px solid #f1f5f9; font-size: 14px; }
+    th { color:#374151; font-size: 13px; }
+    .actions { display:flex; gap:8px; }
+    .btn2 { background:#374151; }
+    .btnDanger { background:#b91c1c; }
+    .pill { display:inline-block; padding:3px 8px; background:#f3f4f6; border-radius:999px; font-size:12px; color:#374151; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="topbar">
+      <h1>Control de horas</h1>
+      <div class="muted" id="whoami"></div>
+    </div>
+  </header>
+
+  <main>
+    <!-- LOGIN -->
+    <section class="card" id="loginCard">
+      <h2 style="margin:0 0 10px;">Acceso</h2>
+      <div class="row">
+        <div>
+          <label>Usuario (ej: cristobal)</label>
+          <input id="username" placeholder="usuario" autocomplete="username" />
+        </div>
+        <div>
+          <label>Clave</label>
+          <input id="password" type="password" placeholder="clave" autocomplete="current-password" />
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <button id="btnLogin">Entrar</button>
+      </div>
+      <div id="loginMsg" class="msg" style="display:none;"></div>
+    </section>
+
+    <!-- APP -->
+    <section class="card" id="appCard" style="display:none;">
+      <div class="topbar">
+        <div>
+          <h2 style="margin:0 0 4px;">Nuevo parte</h2>
+          <div class="muted">Horas en formato <b>HH:MM</b> (ej: 08:30). No permite fechas futuras.</div>
+        </div>
+        <div class="actions">
+          <button class="btn2" id="btnRefresh" type="button">Actualizar</button>
+          <button class="btnDanger" id="btnLogout" type="button">Salir</button>
+        </div>
+      </div>
+
+      <label>Fecha</label>
+      <input id="work_date" type="date" />
+
+      <label>Obra</label>
+      <select id="project_id"></select>
+
+      <label>Horas (HH:MM)</label>
+      <input id="hhmm" placeholder="08:30" value="08:00" />
+
+      <label>Observaciones (opcional)</label>
+      <textarea id="notes" placeholder="Opcional..."></textarea>
+
+      <div style="margin-top:10px;">
+        <button id="btnSave">Guardar parte</button>
+      </div>
+
+      <div id="appMsg" class="msg" style="display:none;"></div>
+    </section>
+
+    <!-- MIS PARTES -->
+    <section class="card" id="listCard" style="display:none;">
+      <div class="topbar">
+        <h2 style="margin:0;">Mis partes</h2>
+        <span class="pill" id="countPill">0</span>
+      </div>
+
+      <div style="overflow:auto; margin-top:8px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Obra</th>
+              <th>Horas</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="muted" style="margin-top:10px;">
+        Nota: editar/borrar solo funciona dentro de 48h (por seguridad).
+      </div>
+      <div id="listMsg" class="msg" style="display:none;"></div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+    // ✅ Tus datos
+    const SUPABASE_URL = "https://lawtbqsiqjfdtrmssehu.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_fKIARcdNmcTlEs7yrXISlA_CuLuMHWv";
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // Helpers
+    const $ = (id) => document.getElementById(id);
+    const todayISO = () => new Date().toISOString().slice(0,10);
+
+    function usernameToPseudoEmail(username) {
+      const u = (username || "").trim().toLowerCase();
+      return `${u}@empresa.local`;
+    }
+
+    function hhmmToMinutes(hhmm) {
+      const m = (hhmm || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+      if (!m) throw new Error("Formato inválido. Usa HH:MM (ej: 08:30)");
+      const hh = Number(m[1]);
+      const mm = Number(m[2]);
+      if (hh < 0 || hh > 24 || mm < 0 || mm > 59) throw new Error("Hora inválida");
+      const total = hh * 60 + mm;
+      if (total > 1440) throw new Error("Máximo 24:00");
+      return total;
+    }
+
+    function minutesToHHMM(minutes) {
+      const hh = Math.floor(minutes / 60);
+      const mm = minutes % 60;
+      return String(hh).padStart(2,"0") + ":" + String(mm).padStart(2,"0");
+    }
+
+    function showMsg(el, text, isError=false) {
+      el.style.display = "block";
+      el.textContent = text;
+      el.classList.toggle("err", isError);
+    }
+    function hideMsg(el) {
+      el.style.display = "none";
+      el.textContent = "";
+      el.classList.remove("err");
+    }
+
+    // State
+    let projects = []; // {id,name}
+    let sessionUser = null;
+
+    // UI refs
+    const loginCard = $("loginCard");
+    const appCard = $("appCard");
+    const listCard = $("listCard");
+    const whoami = $("whoami");
+
+    const loginMsg = $("loginMsg");
+    const appMsg = $("appMsg");
+    const listMsg = $("listMsg");
+
+    const workDate = $("work_date");
+    const projectSel = $("project_id");
+    const hhmmInput = $("hhmm");
+    const notesInput = $("notes");
+
+    workDate.value = todayISO();
+    workDate.max = todayISO();
+
+    async function refreshSession() {
+      const { data } = await supabase.auth.getSession();
+      sessionUser = data.session?.user ?? null;
+      return sessionUser;
+    }
+
+    async function loadProjects() {
+      const { data, error } = await supabase
+        .from("projects")
+        .select("id,name")
+        .eq("active", true)
+        .order("name", { ascending: true });
+
+      if (error) throw error;
+      projects = data || [];
+      projectSel.innerHTML = projects.map(p => `<option value="${p.id}">${p.name}</option>`).join("");
+    }
+
+    function projectNameById(id) {
+      const p = projects.find(x => x.id === id);
+      return p ? p.name : id;
+    }
+
+    async function loadMyEntries() {
+      hideMsg(listMsg);
+      if (!sessionUser) return;
+
+      const { data, error } = await supabase
+        .from("time_entries")
+        .select("id, work_date, minutes, project_id, notes, created_at")
+        .eq("user_id", sessionUser.id)
+        .order("work_date", { ascending: false })
+        .limit(200);
+
+      if (error) throw error;
+
+      const rows = data || [];
+      $("countPill").textContent = String(rows.length);
+
+      const tbody = $("tbody");
+      tbody.innerHTML = rows.map(r => `
+        <tr>
+          <td>${r.work_date}</td>
+          <td>${projectNameById(r.project_id)}</td>
+          <td>${minutesToHHMM(r.minutes)}</td>
+          <td>
+            <div class="actions">
+              <button class="btn2" data-edit="${r.id}" data-min="${r.minutes}">Editar</button>
+              <button class="btnDanger" data-del="${r.id}">Borrar</button>
+            </div>
+          </td>
+        </tr>
+      `).join("");
+
+      // Bind actions
+      tbody.querySelectorAll("[data-del]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-del");
+          if (!confirm("¿Borrar este parte?")) return;
+          const { error } = await supabase.from("time_entries").delete().eq("id", id);
+          if (error) return showMsg(listMsg, error.message, true);
+          await loadMyEntries();
+        });
+      });
+
+      tbody.querySelectorAll("[data-edit]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-edit");
+          const curMin = Number(btn.getAttribute("data-min"));
+          const newHHMM = prompt("Horas (HH:MM)", minutesToHHMM(curMin));
+          if (!newHHMM) return;
+
+          let minutes;
+          try { minutes = hhmmToMinutes(newHHMM); }
+          catch (e) { return showMsg(listMsg, e.message, true); }
+
+          const { error } = await supabase.from("time_entries").update({ minutes }).eq("id", id);
+          if (error) return showMsg(listMsg, error.message, true); // saltará si >48h
+          await loadMyEntries();
+        });
+      });
+    }
+
+    function showAppUI() {
+      loginCard.style.display = "none";
+      appCard.style.display = "block";
+      listCard.style.display = "block";
+      whoami.textContent = "Conectado";
+    }
+
+    function showLoginUI() {
+      loginCard.style.display = "block";
+      appCard.style.display = "none";
+      listCard.style.display = "none";
+      whoami.textContent = "";
+    }
+
+    // Actions
+    $("btnLogin").addEventListener("click", async () => {
+      hideMsg(loginMsg);
+      const username = $("username").value;
+      const password = $("password").value;
+
+      if (!username || !password) return showMsg(loginMsg, "Pon usuario y clave.", true);
+
+      const email = usernameToPseudoEmail(username);
+
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) return showMsg(loginMsg, error.message, true);
+
+      await boot();
+    });
+
+    $("btnLogout").addEventListener("click", async () => {
+      await supabase.auth.signOut();
+      showLoginUI();
+    });
+
+    $("btnRefresh").addEventListener("click", async () => {
+      try {
+        await loadProjects();
+        await loadMyEntries();
+        showMsg(appMsg, "Actualizado ✅");
+        setTimeout(() => hideMsg(appMsg), 1200);
+      } catch (e) {
+        showMsg(appMsg, e.message || String(e), true);
+      }
+    });
+
+    $("btnSave").addEventListener("click", async () => {
+      hideMsg(appMsg);
+
+      const d = workDate.value;
+      if (!d) return showMsg(appMsg, "Selecciona una fecha.", true);
+      if (d > todayISO()) return showMsg(appMsg, "No se permiten fechas futuras.", true);
+
+      let minutes;
+      try { minutes = hhmmToMinutes(hhmmInput.value); }
+      catch (e) { return showMsg(appMsg, e.message, true); }
+
+      const project_id = projectSel.value;
+      const notes = (notesInput.value || "").trim();
+
+      const u = await refreshSession();
+      if (!u) { showLoginUI(); return; }
+
+      const { error } = await supabase.from("time_entries").insert({
+        user_id: u.id,
+        project_id,
+        work_date: d,
+        minutes,
+        notes: notes || null
+      });
+
+      if (error) return showMsg(appMsg, error.message, true);
+
+      notesInput.value = "";
+      showMsg(appMsg, "Parte guardado ✅");
+      await loadMyEntries();
+    });
+
+    // Boot
+    async function boot() {
+      try {
+        const u = await refreshSession();
+        if (!u) return showLoginUI();
+
+        await loadProjects();
+        await loadMyEntries();
+        showAppUI();
+      } catch (e) {
+        showMsg(loginMsg, e.message || String(e), true);
+        showLoginUI();
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>
