@@ -91,7 +91,50 @@
     </section>
 
     <!-- MIS PARTES -->
-    <section class="card" id="listCard" style="display:none;">
+    <section class="card" id="listCard" style="display:none;"><!-- PANEL ADMIN -->
+<section class="card" id="adminCard" style="display:none;">
+  <div class="topbar">
+    <div>
+      <h2 style="margin:0 0 4px;">Panel (Admin)</h2>
+      <div class="muted">Resumen de horas en tiempo real.</div>
+    </div>
+    <span class="pill" id="adminPill">ADMIN</span>
+  </div>
+
+  <div class="row" style="margin-top:10px;">
+    <div>
+      <label>Desde</label>
+      <input id="admin_from" type="date" />
+    </div>
+    <div>
+      <label>Hasta</label>
+      <input id="admin_to" type="date" />
+    </div>
+  </div>
+
+  <div style="margin-top:10px;" class="actions">
+    <button id="btnAdminLoad" type="button">Actualizar panel</button>
+  </div>
+
+  <div id="adminMsg" class="msg" style="display:none;"></div>
+
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:12px;">
+    <div style="border:1px solid #eee; border-radius:12px; padding:10px;">
+      <h3 style="margin:0 0 8px;">Totales por obra</h3>
+      <div id="adminObras"></div>
+    </div>
+    <div style="border:1px solid #eee; border-radius:12px; padding:10px;">
+      <h3 style="margin:0 0 8px;">Totales por trabajador</h3>
+      <div id="adminTrab"></div>
+    </div>
+  </div>
+
+  <div style="border:1px solid #eee; border-radius:12px; padding:10px; margin-top:12px;">
+    <h3 style="margin:0 0 8px;">Totales por día</h3>
+    <div id="adminDias"></div>
+  </div>
+</section>
+
       <div class="topbar">
         <h2 style="margin:0;">Mis partes</h2>
         <span class="pill" id="countPill">0</span>
@@ -174,6 +217,131 @@
     const appCard = $("appCard");
     const listCard = $("listCard");
     const whoami = $("whoami");
+    // --- ADMIN UI refs ---
+const adminCard = $("adminCard");
+const adminMsg = $("adminMsg");
+const adminFrom = $("admin_from");
+const adminTo = $("admin_to");
+const adminObras = $("adminObras");
+const adminTrab = $("adminTrab");
+const adminDias = $("adminDias");
+const btnAdminLoad = $("btnAdminLoad");
+
+// Defaults de fechas (mes actual)
+function startOfMonthISO(d = new Date()) {
+  const x = new Date(d.getFullYear(), d.getMonth(), 1);
+  return x.toISOString().slice(0, 10);
+}
+adminFrom.value = startOfMonthISO();
+adminTo.value = todayISO();
+
+function renderList(container, items) {
+  // items: Array<{label, valueHHMM}>
+  container.innerHTML = items.map(it => `
+    <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #f3f4f6;">
+      <span>${it.label}</span>
+      <b>${it.valueHHMM}</b>
+    </div>
+  `).join("");
+  if (!items.length) container.innerHTML = `<div class="muted">Sin datos</div>`;
+}
+
+async function isCurrentUserAdmin(u) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("role, active")
+    .eq("user_id", u.id)
+    .single();
+
+  if (error) throw error;
+  return data?.active === true && data?.role === "admin";
+}
+
+async function loadAdminPanel() {
+  hideMsg(adminMsg);
+
+  const from = adminFrom.value;
+  const to = adminTo.value;
+
+  if (!from || !to) return showMsg(adminMsg, "Pon Desde y Hasta.", true);
+  if (from > to) return showMsg(adminMsg, "La fecha 'Desde' no puede ser mayor que 'Hasta'.", true);
+
+  // Traemos partes en el rango y calculamos totales en JS
+  const { data, error } = await supabase
+    .from("time_entries")
+    .select("minutes, work_date, project_id, user_id")
+    .gte("work_date", from)
+    .lte("work_date", to)
+    .limit(5000);
+
+  if (error) throw error;
+
+  const entries = data || [];
+
+  // Mapas para sumar
+  const byProject = new Map(); // project_id -> minutes
+  const byUser = new Map();    // user_id -> minutes
+  const byDay = new Map();     // work_date -> minutes
+
+  for (const e of entries) {
+    byProject.set(e.project_id, (byProject.get(e.project_id) || 0) + e.minutes);
+    byUser.set(e.user_id, (byUser.get(e.user_id) || 0) + e.minutes);
+    byDay.set(e.work_date, (byDay.get(e.work_date) || 0) + e.minutes);
+  }
+
+  // Resolver nombres: obras
+  const projIds = Array.from(byProject.keys());
+  let projName = new Map();
+  if (projIds.length) {
+    const { data: projs, error: e1 } = await supabase
+      .from("projects")
+      .select("id,name")
+      .in("id", projIds);
+    if (e1) throw e1;
+    (projs || []).forEach(p => projName.set(p.id, p.name));
+  }
+
+  // Resolver nombres: trabajadores
+  const userIds = Array.from(byUser.keys());
+  let userName = new Map();
+  if (userIds.length) {
+    const { data: profs, error: e2 } = await supabase
+      .from("profiles")
+      .select("user_id, full_name")
+      .in("user_id", userIds);
+    if (e2) throw e2;
+    (profs || []).forEach(p => userName.set(p.user_id, p.full_name));
+  }
+
+  // Preparar listas ordenadas
+  const obrasList = Array.from(byProject.entries())
+    .map(([id, mins]) => ({ label: projName.get(id) || id, valueHHMM: minutesToHHMM(mins), mins }))
+    .sort((a,b) => b.mins - a.mins);
+
+  const trabList = Array.from(byUser.entries())
+    .map(([id, mins]) => ({ label: userName.get(id) || id, valueHHMM: minutesToHHMM(mins), mins }))
+    .sort((a,b) => b.mins - a.mins);
+
+  const diasList = Array.from(byDay.entries())
+    .map(([d, mins]) => ({ label: d, valueHHMM: minutesToHHMM(mins), mins }))
+    .sort((a,b) => (a.label < b.label ? 1 : -1)); // desc por fecha
+
+  renderList(adminObras, obrasList);
+  renderList(adminTrab, trabList);
+  renderList(adminDias, diasList);
+
+  showMsg(adminMsg, "Panel actualizado ✅");
+  setTimeout(() => hideMsg(adminMsg), 1200);
+}
+
+btnAdminLoad.addEventListener("click", async () => {
+  try {
+    await loadAdminPanel();
+  } catch (e) {
+    showMsg(adminMsg, e.message || String(e), true);
+  }
+});
+
 
     const loginMsg = $("loginMsg");
     const appMsg = $("appMsg");
@@ -270,12 +438,16 @@
       });
     }
 
-    function showAppUI() {
-      loginCard.style.display = "none";
-      appCard.style.display = "block";
-      listCard.style.display = "block";
-      whoami.textContent = "Conectado";
-    }
+    function showAppUI(isAdmin=false) {
+  loginCard.style.display = "none";
+  appCard.style.display = "block";
+  listCard.style.display = "block";
+  whoami.textContent = "Conectado";
+
+  // Mostrar panel solo si admin
+  adminCard.style.display = isAdmin ? "block" : "none";
+}
+
 
     function showLoginUI() {
       loginCard.style.display = "block";
@@ -354,8 +526,13 @@
         const u = await refreshSession();
         if (!u) return showLoginUI();
 
-        await loadProjects();
-        await loadMyEntries();
+       await loadProjects();
+await loadMyEntries();
+
+const admin = await isCurrentUserAdmin(u);
+showAppUI(admin);
+if (admin) await loadAdminPanel();
+
         showAppUI();
       } catch (e) {
         showMsg(loginMsg, e.message || String(e), true);
